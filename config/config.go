@@ -13,5 +13,5 @@ func LoadConfig() {
 		panic(err)
 	}
 
-	DatabaseFile = filepath.Join(filepath.Dir(dir), "db/database.db")
+	DatabaseFile = filepath.Join(filepath.Dir(dir), "database.db")
 }
