@@ -66,7 +66,7 @@ func validateMigrations() error {
 	}
 
 	var name string
-	err = db.QueryRow("SELECT name FROM teams WHERE teamid = 1610612752").Scan(&name)
+	err = db.QueryRow("SELECT name FROM teams WHERE team_id = 1610612752").Scan(&name)
 	if err != nil {
 		return fmt.Errorf("failed to find Knicks: %v", err)
 	}
