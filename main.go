@@ -3,8 +3,12 @@ package main
 import (
 	"basketball/config"
 	"basketball/nba"
+	"errors"
+	"strings"
+	"time"
 
 	"database/sql"
+	_ "embed"
 	"fmt"
 	"log"
 	"os"
@@ -12,7 +16,15 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	flag "github.com/spf13/pflag"
 )
+
+var statlinePlayerName string
+
+func init() {
+	flag.StringVarP(&statlinePlayerName, "statline", "s", "", "player name to get statline for")
+	flag.Parse()
+}
 
 func main() {
 	config.LoadConfig()
@@ -24,6 +36,10 @@ func main() {
 	}
 
 	scrapeCommonAllPlayers()
+
+	if len(statlinePlayerName) != 0 {
+		statline(statlinePlayerName)
+	}
 }
 
 func setupDatabase() {
@@ -78,25 +94,16 @@ func insertPlayers(players []nba.CommonAllPlayer) {
 			log.Printf("Error inserting player %s(%d): %v", player.Name, player.ID, err)
 			return
 		}
-		lastId, err := res.LastInsertId()
-		if err != nil {
+		if _, err := res.LastInsertId(); err != nil {
 			tx.Rollback()
 			log.Printf("Failed to get last insert ID for player %s (%d): %v", player.Name, player.ID, err)
 			return
 		}
-		rowsAffected, err := res.RowsAffected()
-		if err != nil {
+		if _, err := res.RowsAffected(); err != nil {
 			tx.Rollback()
 			log.Printf("Failed to get rows affected for player %s (%d): %v", player.Name, player.ID, err)
 			return
 		}
-		log.Printf("Processed player %s (ID: %d) with TeamID: %d. Rows affected: %d. Last insert Id: %d",
-			player.Name,
-			player.ID,
-			player.TeamID,
-			rowsAffected,
-			lastId,
-		)
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -152,4 +159,105 @@ func validateMigrations() error {
 	}
 	log.Printf("Database validation successful: found %d teams\n", count)
 	return nil
+}
+
+//go:embed asciitball.txt
+var chunkyDunker string
+
+func statline(name string) {
+	db, err := sql.Open("sqlite3", config.DatabaseFile)
+	if err != nil {
+		panic(fmt.Errorf("failed to open databse: %v", err))
+	}
+	defer db.Close()
+
+	var id int
+	err = db.QueryRow("SELECT id FROM players WHERE name = $1", name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		fmt.Println(chunkyDunker)
+		fmt.Printf("There is no player with that name. James Naismith wishes %s best of luck in their NBA aspirations.\n", name)
+		return
+	} else if err != nil {
+		panic(err)
+	}
+	games := nba.LeagueGameFinderByPlayerID(id)
+	game := games[0]
+
+	statStrings := []string {
+		"Point",
+		"Rebound",
+		"Assist",
+		"Steal",
+		"Block",
+		"Personal Foul",
+		"Turnover",
+	}
+
+	stats := []int {
+		game.PTS,
+		game.REB,
+		game.AST,
+		game.STL,
+		game.BLK,
+		game.PF,
+		game.TOV,
+	}
+
+	statline := []string{}
+
+	if len(stats) != len(statStrings) {
+		panic(fmt.Errorf("length of stats (%d) != length of statStrings (%d)", len(stats), len(statStrings)))
+	}
+
+	for i := range stats {
+		appendAndPluralize(stats[i], statStrings[i], &statline)
+	}
+	if game.FGA > 0 {
+		fg := fmt.Sprintf("%d-%d FG (%s)", game.FGM, game.FGA, floatPercentage(*game.FG_PCT))
+		statline = append(statline, fg)
+	}
+	if game.FG3A > 0 {
+		fg3 := fmt.Sprintf("%d-%d 3PT (%s)", game.FG3M, game.FG3A, floatPercentage(*game.FG3_PCT))
+		statline = append(statline, fg3)
+	}
+	if game.FTA > 0 {
+		ft := fmt.Sprintf("%d-%d FT (%s)", game.FTM, game.FTA, floatPercentage(*game.FT_PCT))
+		statline = append(statline, ft)
+	}
+	if game.PlusMinus >= 0 {
+		pm := fmt.Sprintf("+%d in %d minutes", game.PlusMinus, game.MIN)
+		statline = append(statline, pm)
+	} else {
+		pm := fmt.Sprintf("%d in %d minutes", game.PlusMinus, game.MIN)
+		statline = append(statline, pm)
+	}
+
+	parsedDate, err := time.Parse("2006-01-02", game.GameDate)
+	if err != nil {
+		panic(err)
+	}
+	formatDate := parsedDate.Format("01.02.2006")
+
+	fmt.Printf("%s | %s %s\n", game.PlayerName, game.Matchup, formatDate)
+	fmt.Println(strings.Join(statline, ", "))
+}
+
+func appendAndPluralize(stat int, statString string, statline *[]string) {
+	if stat > 0 {
+		s := fmt.Sprintf("%d %s", stat, statString)
+		if stat > 1 {
+			s += "s"
+		}
+		*statline = append(*statline, s)
+	}
+}
+
+func floatPercentage(f float64) string {
+	if f*100 == float64(int(f*100)) {
+		return fmt.Sprintf("%.f%%", f*100)
+	} else if f*1000 == float64(int(f*1000)) {
+		return fmt.Sprintf("%.1f%%", f*100)
+	} else {
+		return fmt.Sprintf("%.2f%%", f*100)
+	}
 }
