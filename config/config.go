@@ -6,6 +6,7 @@ import (
 )
 
 var DatabaseFile string
+var EndScreenFile string
 
 func LoadConfig() {
 	dir, err := os.Executable()
@@ -14,4 +15,5 @@ func LoadConfig() {
 	}
 
 	DatabaseFile = filepath.Join(filepath.Dir(dir), "database.db")
+	EndScreenFile = filepath.Join(filepath.Dir(dir), "end.mp4")
 }

@@ -308,8 +308,6 @@ func video(playerCode string) {
 		nba.VideoDetailsAssetContextMeasures.AST,
 		nba.VideoDetailsAssetContextMeasures.STL,
 		nba.VideoDetailsAssetContextMeasures.TOV,
-		nba.VideoDetailsAssetContextMeasures.PF,
-		nba.VideoDetailsAssetContextMeasures.FTA,
 	}
 	gameAssets := map[string][]nba.VideoDetailAsset{}
 	errors := []error{}
@@ -416,9 +414,15 @@ func video(playerCode string) {
 
 		err := downloadVideoUrl(url, filename)
 		if err != nil {
+			_ = os.RemoveAll(tmpDir)
 			panic(err)
 		}
 		time.Sleep(time.Millisecond * 50)
+	}
+
+	if err := os.Symlink(config.EndScreenFile, fmt.Sprintf("%s/%06d.mp4", tmpDir, len(assets))); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		panic(err)
 	}
 
 	file, err := os.Create(tmpDir + "/files.txt")
@@ -427,7 +431,8 @@ func video(playerCode string) {
 	}
 	defer file.Close()
 
-	for i := range assets {
+	// one extra iteration for end_screen.mp4
+	for i := 0; i <= len(assets); i++ {
 		file.Write([]byte(fmt.Sprintf("file '%06d.mp4'\n", i)))
 	}
 
