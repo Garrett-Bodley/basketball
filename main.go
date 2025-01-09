@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -343,82 +344,9 @@ func video(playerCode string) {
 		panic("uh oh no assets found :(")
 	}
 
-	// sort assets chronologically
-	re := regexp.MustCompile(`(?:https:\/\/videos.nba.com\/nba\/pbp\/media\/\d+\/\d+\/\d+\/)(\d+)\/(\d+)`)
-	slices.SortStableFunc(assets, func(a, b nba.VideoDetailAsset) int {
-		var urlA string
-		if a.LargeUrl != nil {
-			urlA = *a.LargeUrl
-		} else if a.MedUrl != nil {
-			urlA = *a.MedUrl
-		} else if a.SmallUrl != nil {
-			urlA = *a.SmallUrl
-		} else {
-			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *a.Description))
-		}
-
-		var urlB string
-		if b.LargeUrl != nil {
-			urlB = *b.LargeUrl
-		} else if b.MedUrl != nil {
-			urlB = *b.MedUrl
-		} else if b.SmallUrl != nil {
-			urlB = *b.SmallUrl
-		} else {
-			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *b.Description))
-		}
-
-		matchesA := re.FindStringSubmatch(urlA)
-		matchesB := re.FindStringSubmatch(urlB)
-
-		sortNumA := matchesA[1] + fmt.Sprintf("%03s", matchesA[2])
-		sortNumB := matchesB[1] + fmt.Sprintf("%03s", matchesB[2])
-
-		numA, err := strconv.Atoi(sortNumA)
-		if err != nil {
-			panic(err)
-		}
-		numB, err := strconv.Atoi(sortNumB)
-		if err != nil {
-			panic(err)
-		}
-
-		return numA - numB
-	})
-
-	parsedDate, err := time.Parse("2006-01-02", *game.GameDate)
-	if err != nil {
-		panic(err)
-	}
-	formatDate := parsedDate.Format("01.02.2006")
-	tmpDirPattern := strings.ReplaceAll(*game.PlayerName, " ", "_") + "_" + formatDate + "_"
-	tmpDir, err := os.MkdirTemp(os.TempDir(), tmpDirPattern)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Downloading assets...")
-	filenames := make([]string, len(assets))
-	for i, asset := range assets {
-		fmt.Println("Downloading:", *asset.Description)
-		filename := fmt.Sprintf("%s/%06d.mp4", tmpDir, i)
-		filenames[i] = filename
-		var url string
-		if asset.LargeUrl != nil {
-			url = *asset.LargeUrl
-		} else if asset.MedUrl != nil {
-			url = *asset.MedUrl
-		} else {
-			url = *asset.SmallUrl
-		}
-
-		err := downloadVideoUrl(url, filename)
-		if err != nil {
-			_ = os.RemoveAll(tmpDir)
-			panic(err)
-		}
-		time.Sleep(time.Millisecond * 50)
-	}
+	sortAssets(&assets)
+	tmpDir := mkdirTmp(&game)
+	downloadAssets(&assets, tmpDir)
 
 	if err := os.Symlink(config.EndScreenFile, fmt.Sprintf("%s/%06d.mp4", tmpDir, len(assets))); err != nil {
 		_ = os.RemoveAll(tmpDir)
@@ -445,17 +373,17 @@ func video(playerCode string) {
 	sum := md5.Sum([]byte(timeString))
 	outputFileName := home + "/Downloads/" + fmt.Sprintf("%x", sum) + ".mp4"
 
-	args := []string{"-f", "concat", "-safe", "0", "-i", fmt.Sprintf("%s/files.txt", tmpDir), "-c", "copy", outputFileName}
+	args := []string{"-f", "concat", "-safe", "0", "-vsync", "0", "-i", fmt.Sprintf("%s/files.txt", tmpDir), "-c", "copy", outputFileName}
 	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stdin, cmd.Stderr, cmd.Stdout = os.Stdin, os.Stderr, os.Stdout
 	fmt.Println(strings.Join(cmd.Args, " "))
-	err = cmd.Run()
-	if err != nil {
+
+	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(tmpDir)
 		panic(err)
 	}
 
-	err = os.RemoveAll(tmpDir)
-	if err != nil {
+	if err := os.RemoveAll(tmpDir); err != nil {
 		panic(err)
 	}
 	printStatline(game)
@@ -499,7 +427,7 @@ func getVideoAssets(game nba.LeagueGameFinderByPlayerGame, measure nba.VideoDeta
 		}
 	case "FTA":
 		if len(assets) != int(*game.FTA) {
-			return fmt.Errorf("expected %d FTA assets, have %d", int(*game.PF), len(assets))
+			return fmt.Errorf("expected %d FTA assets, have %d", int(*game.FTA), len(assets))
 		}
 	default:
 		return fmt.Errorf("unexpected context measure provided: \"%s\"", string(measure))
@@ -507,29 +435,129 @@ func getVideoAssets(game nba.LeagueGameFinderByPlayerGame, measure nba.VideoDeta
 	return nil
 }
 
-func downloadVideoUrl(url, filepath string) error {
+func sortAssets(assets *[]nba.VideoDetailAsset) {
+	re := regexp.MustCompile(`(?:https:\/\/videos.nba.com\/nba\/pbp\/media\/\d+\/\d+\/\d+\/)(\d+)\/(\d+)`)
+	slices.SortStableFunc(*assets, func(a, b nba.VideoDetailAsset) int {
+		var urlA string
+		if a.LargeUrl != nil {
+			urlA = *a.LargeUrl
+		} else if a.MedUrl != nil {
+			urlA = *a.MedUrl
+		} else if a.SmallUrl != nil {
+			urlA = *a.SmallUrl
+		} else {
+			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *a.Description))
+		}
+
+		var urlB string
+		if b.LargeUrl != nil {
+			urlB = *b.LargeUrl
+		} else if b.MedUrl != nil {
+			urlB = *b.MedUrl
+		} else if b.SmallUrl != nil {
+			urlB = *b.SmallUrl
+		} else {
+			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *b.Description))
+		}
+
+		matchesA := re.FindStringSubmatch(urlA)
+		matchesB := re.FindStringSubmatch(urlB)
+
+		sortNumA := matchesA[1] + fmt.Sprintf("%03s", matchesA[2])
+		sortNumB := matchesB[1] + fmt.Sprintf("%03s", matchesB[2])
+
+		numA, err := strconv.Atoi(sortNumA)
+		if err != nil {
+			panic(err)
+		}
+		numB, err := strconv.Atoi(sortNumB)
+		if err != nil {
+			panic(err)
+		}
+
+		return numA - numB
+	})
+}
+
+func mkdirTmp(game *nba.LeagueGameFinderByPlayerGame) string {
+	parsedDate, err := time.Parse("2006-01-02", *(*game).GameDate)
+	if err != nil {
+		panic(err)
+	}
+	formatDate := parsedDate.Format("01.02.2006")
+	tmpDirPattern := strings.ReplaceAll(*(*game).PlayerName, " ", "_") + "_" + formatDate + "_"
+	tmpDir, err := os.MkdirTemp(os.TempDir(), tmpDirPattern)
+	if err != nil {
+		panic(err)
+	}
+	return tmpDir
+}
+
+func downloadAssets(assets *[]nba.VideoDetailAsset, tmpDir string) {
+
+	fmt.Println("Downloading assets...")
+	wg := sync.WaitGroup{}
+	errChan := make(chan error, len(*assets))
+
+	for i, asset := range *assets {
+		filename := fmt.Sprintf("%s/%06d.mp4", tmpDir, i)
+		wg.Add(1)
+		go downloadVideoUrl(filename, asset, &wg, errChan)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	failure := len(errChan) > 0
+	for err := range errChan {
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+	if failure {
+		_ = os.RemoveAll(tmpDir)
+		panic("womp womp")
+	}
+}
+
+func downloadVideoUrl(filepath string, asset nba.VideoDetailAsset, wg *sync.WaitGroup, errChan chan error) {
+	defer wg.Done()
+
+	var url string
+	if asset.LargeUrl != nil {
+		url = *asset.LargeUrl
+	} else if asset.MedUrl != nil {
+		url = *asset.MedUrl
+	} else {
+		url = *asset.SmallUrl
+	}
+
 	client := &http.Client{}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return err
+		errChan <- err
+		return
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		errChan <- err
+		return
 	}
 	defer resp.Body.Close()
 
 	out, err := os.Create(filepath)
 	if err != nil {
-		return err
+		errChan <- err
+		return
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return err
+		errChan <- err
+		return
 	}
-	return nil
+	fmt.Println("Downloaded:", *asset.Description)
 }
