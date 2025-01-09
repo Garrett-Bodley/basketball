@@ -19,10 +19,22 @@ type CommonAllPlayersResp struct {
 }
 
 type CommonAllPlayer struct {
-	ID     int    `json:"PERSON_ID"`
-	Name   string `json:"DISPLAY_FIRST_LAST"`
-	Code   string `json:"PLAYERCODE"`
-	TeamID int    `json:"TEAM_ID"`
+	PersonID                *float64
+	DisplayLastFirst        *string
+	DisplayFirstLast        *string
+	RosterStatus            *float64
+	FromYear                *string
+	ToYear                  *string
+	PlayerCode              *string
+	PlayerSlug              *string
+	TeamID                  *float64
+	TeamCity                *string
+	TeamName                *string
+	TeamAbbreviation        *string
+	TeamCode                *string
+	TeamSlug                *string
+	GamesPlayedFlag         *string
+	OtherLeagueExperienceCh *string
 }
 
 func initNBAReq(url string) *http.Request {
@@ -61,17 +73,23 @@ func CommonAllPlayers() []CommonAllPlayer {
 
 	players := make([]CommonAllPlayer, len(unmarshalledBody.ResultSets[0].RowSet))
 	for i, raw := range unmarshalledBody.ResultSets[0].RowSet {
-		player := CommonAllPlayer{}
-		player.ID = int(raw[0].(float64))
-		player.Name = raw[2].(string)
-		// fmt.Println(raw[7])
-		if raw[7] == nil {
-			fmt.Println(player.Name, raw)
-		}
-		// player.Code = raw[6].(string)
-		player.TeamID = int(raw[8].(float64))
-		if player.TeamID == 0 {
-			fmt.Println(player.Name)
+		player := CommonAllPlayer{
+			PersonID:                maybe[float64](raw[0]),
+			DisplayLastFirst:        maybe[string](raw[1]),
+			DisplayFirstLast:        maybe[string](raw[2]),
+			RosterStatus:            maybe[float64](raw[3]),
+			FromYear:                maybe[string](raw[4]),
+			ToYear:                  maybe[string](raw[5]),
+			PlayerCode:              maybe[string](raw[6]),
+			PlayerSlug:              maybe[string](raw[7]),
+			TeamID:                  maybe[float64](raw[8]),
+			TeamCity:                maybe[string](raw[9]),
+			TeamName:                maybe[string](raw[10]),
+			TeamAbbreviation:        maybe[string](raw[11]),
+			TeamCode:                maybe[string](raw[12]),
+			TeamSlug:                maybe[string](raw[13]),
+			GamesPlayedFlag:         maybe[string](raw[14]),
+			OtherLeagueExperienceCh: maybe[string](raw[15]),
 		}
 		players[i] = player
 	}
@@ -127,18 +145,6 @@ func LeagueGameFinderByPlayerID(playerID int) []LeagueGameFinderByPlayerGame {
 	req := initNBAReq(url)
 	body := curl(req)
 
-	// client := &http.Client{}
-	// resp, err := client.Do(req)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// defer resp.Body.Close()
-
-	// body, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
 	unmarshalledBody := LeagueGameFinderByPlayerIDResp{}
 	err := json.Unmarshal(body, &unmarshalledBody)
 	if err != nil {
@@ -178,11 +184,11 @@ func LeagueGameFinderByPlayerID(playerID int) []LeagueGameFinderByPlayerGame {
 		"PLUS_MINUS",
 	}
 	if len(expectedHeaders) != len(unmarshalledBody.ResultsSet[0].Headers) {
-		panic(fmt.Errorf("Expected headers to be of length %d, found %d.", len(expectedHeaders), len(unmarshalledBody.ResultsSet[0].Headers)))
+		panic(fmt.Errorf("expected headers to be of length %d, found %d", len(expectedHeaders), len(unmarshalledBody.ResultsSet[0].Headers)))
 	}
 	for i := range expectedHeaders {
 		if expectedHeaders[i] != unmarshalledBody.ResultsSet[0].Headers[i] {
-			panic(fmt.Errorf("Uh Oh! Mismatched headers! Expected %s, found %s", expectedHeaders[i], unmarshalledBody.ResultsSet[0].Headers[i]))
+			panic(fmt.Errorf("uh oh! mismatched headers! expected %s, found %s", expectedHeaders[i], unmarshalledBody.ResultsSet[0].Headers[i]))
 		}
 	}
 
