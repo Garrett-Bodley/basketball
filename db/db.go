@@ -6,7 +6,6 @@ import (
 
 	"database/sql"
 	_ "embed"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -80,23 +79,19 @@ func ValidateMigrations() error {
 //go:embed asciitball.txt
 var chunkyDunker string
 
-func PlayerIDFromCode(playerCode string) int {
+func PlayerIDFromCode(playerCode string) (int, error) {
 	db, err := sql.Open("sqlite3", config.DatabaseFile)
 	if err != nil {
-		panic(fmt.Errorf("failed to open databse: %v", err))
+		return -1, fmt.Errorf("failed to open databse: %v", err)
 	}
 	defer db.Close()
 
 	var id int
 	err = db.QueryRow("SELECT id FROM players WHERE name = $1", playerCode).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		fmt.Println(chunkyDunker)
-		fmt.Printf("There is no player with that name. James Naismith wishes %s best of luck in their NBA aspirations.\n", playerCode)
-		os.Exit(1)
-	} else if err != nil {
-		panic(err)
+	if err != nil {
+		return -1, err
 	}
-	return id
+	return id, nil
 }
 
 func InsertPlayers(players []nba.CommonAllPlayer) {

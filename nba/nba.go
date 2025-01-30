@@ -103,7 +103,7 @@ type LeagueGameFinderByPlayerIDResp struct {
 	} `json:"resultSets"`
 }
 
-type LeagueGameFinderByPlayerGame struct {
+type LeagueGameFinderGame struct {
 	SeasonID         *string
 	PlayerId         *float64
 	PlayerName       *string
@@ -140,8 +140,98 @@ type LeagueGameFinderByPlayerGame struct {
 // jalen brunson ID: 1628973
 // knicks teamID: 1610612752
 
-func LeagueGameFinderByPlayerID(playerID int) []LeagueGameFinderByPlayerGame {
+func LeagueGameFinderByPlayerID(playerID int) ([]LeagueGameFinderGame, error) {
 	url := fmt.Sprintf("https://stats.nba.com/stats/leaguegamefinder?PlayerOrTeam=P&PlayerID=%d", playerID)
+	req := initNBAReq(url)
+	body := curl(req)
+
+	unmarshalledBody := LeagueGameFinderByPlayerIDResp{}
+	if err := json.Unmarshal(body, &unmarshalledBody); err != nil {
+		return []LeagueGameFinderGame{}, err
+	}
+
+	expectedHeaders := []string{
+		"SEASON_ID",
+		"PLAYER_ID",
+		"PLAYER_NAME",
+		"TEAM_ID",
+		"TEAM_ABBREVIATION",
+		"TEAM_NAME",
+		"GAME_ID",
+		"GAME_DATE",
+		"MATCHUP",
+		"WL",
+		"MIN",
+		"PTS",
+		"FGM",
+		"FGA",
+		"FG_PCT",
+		"FG3M",
+		"FG3A",
+		"FG3_PCT",
+		"FTM",
+		"FTA",
+		"FT_PCT",
+		"OREB",
+		"DREB",
+		"REB",
+		"AST",
+		"STL",
+		"BLK",
+		"TOV",
+		"PF",
+		"PLUS_MINUS",
+	}
+	if len(expectedHeaders) != len(unmarshalledBody.ResultsSet[0].Headers) {
+		return []LeagueGameFinderGame{}, fmt.Errorf("expected headers to be of length %d, found %d", len(expectedHeaders), len(unmarshalledBody.ResultsSet[0].Headers))
+	}
+	for i := range expectedHeaders {
+		if expectedHeaders[i] != unmarshalledBody.ResultsSet[0].Headers[i] {
+			return []LeagueGameFinderGame{}, fmt.Errorf("uh oh! mismatched headers! expected %s, found %s", expectedHeaders[i], unmarshalledBody.ResultsSet[0].Headers[i])
+		}
+	}
+
+	res := make([]LeagueGameFinderGame, len(unmarshalledBody.ResultsSet[0].RowSet))
+	for i, raw := range unmarshalledBody.ResultsSet[0].RowSet {
+		game := LeagueGameFinderGame{
+			SeasonID:         maybe[string](raw[0]),
+			PlayerId:         maybe[float64](raw[1]),
+			PlayerName:       maybe[string](raw[2]),
+			TeamID:           maybe[float64](raw[3]),
+			TeamAbbreviation: maybe[string](raw[4]),
+			TeamName:         maybe[string](raw[5]),
+			GameID:           maybe[string](raw[6]),
+			GameDate:         maybe[string](raw[7]),
+			Matchup:          maybe[string](raw[8]),
+			WL:               maybe[string](raw[9]),
+			MIN:              maybe[float64](raw[10]),
+			PTS:              maybe[float64](raw[11]),
+			FGM:              maybe[float64](raw[12]),
+			FGA:              maybe[float64](raw[13]),
+			FG_PCT:           maybe[float64](raw[14]),
+			FG3M:             maybe[float64](raw[15]),
+			FG3A:             maybe[float64](raw[16]),
+			FG3_PCT:          maybe[float64](raw[17]),
+			FTM:              maybe[float64](raw[18]),
+			FTA:              maybe[float64](raw[19]),
+			FT_PCT:           maybe[float64](raw[20]),
+			OREB:             maybe[float64](raw[21]),
+			DREB:             maybe[float64](raw[22]),
+			REB:              maybe[float64](raw[23]),
+			AST:              maybe[float64](raw[24]),
+			STL:              maybe[float64](raw[25]),
+			BLK:              maybe[float64](raw[26]),
+			TOV:              maybe[float64](raw[27]),
+			PF:               maybe[float64](raw[28]),
+			PlusMinus:        maybe[float64](raw[29]),
+		}
+		res[i] = game
+	}
+	return res, nil
+}
+
+func LeagueGameFinderByTeamID(teamID int) []LeagueGameFinderGame {
+	url := fmt.Sprintf("https://stats.nba.com/stats/leaguegamefinder?Season=2024-25&PlayerOrTeam=T&TeamID=%d", teamID)
 	req := initNBAReq(url)
 	body := curl(req)
 
@@ -153,8 +243,6 @@ func LeagueGameFinderByPlayerID(playerID int) []LeagueGameFinderByPlayerGame {
 
 	expectedHeaders := []string{
 		"SEASON_ID",
-		"PLAYER_ID",
-		"PLAYER_NAME",
 		"TEAM_ID",
 		"TEAM_ABBREVIATION",
 		"TEAM_NAME",
@@ -192,43 +280,394 @@ func LeagueGameFinderByPlayerID(playerID int) []LeagueGameFinderByPlayerGame {
 		}
 	}
 
-	games := make([]LeagueGameFinderByPlayerGame, len(unmarshalledBody.ResultsSet[0].RowSet))
+	games := make([]LeagueGameFinderGame, len(unmarshalledBody.ResultsSet[0].RowSet))
 	for i, raw := range unmarshalledBody.ResultsSet[0].RowSet {
-		game := LeagueGameFinderByPlayerGame{
+		game := LeagueGameFinderGame{
 			SeasonID:         maybe[string](raw[0]),
-			PlayerId:         maybe[float64](raw[1]),
-			PlayerName:       maybe[string](raw[2]),
-			TeamID:           maybe[float64](raw[3]),
-			TeamAbbreviation: maybe[string](raw[4]),
-			TeamName:         maybe[string](raw[5]),
-			GameID:           maybe[string](raw[6]),
-			GameDate:         maybe[string](raw[7]),
-			Matchup:          maybe[string](raw[8]),
-			WL:               maybe[string](raw[9]),
-			MIN:              maybe[float64](raw[10]),
-			PTS:              maybe[float64](raw[11]),
-			FGM:              maybe[float64](raw[12]),
-			FGA:              maybe[float64](raw[13]),
-			FG_PCT:           maybe[float64](raw[14]),
-			FG3M:             maybe[float64](raw[15]),
-			FG3A:             maybe[float64](raw[16]),
-			FG3_PCT:          maybe[float64](raw[17]),
-			FTM:              maybe[float64](raw[18]),
-			FTA:              maybe[float64](raw[19]),
-			FT_PCT:           maybe[float64](raw[20]),
-			OREB:             maybe[float64](raw[21]),
-			DREB:             maybe[float64](raw[22]),
-			REB:              maybe[float64](raw[23]),
-			AST:              maybe[float64](raw[24]),
-			STL:              maybe[float64](raw[25]),
-			BLK:              maybe[float64](raw[26]),
-			TOV:              maybe[float64](raw[27]),
-			PF:               maybe[float64](raw[28]),
-			PlusMinus:        maybe[float64](raw[29]),
+			TeamID:           maybe[float64](raw[1]),
+			TeamAbbreviation: maybe[string](raw[2]),
+			TeamName:         maybe[string](raw[3]),
+			GameID:           maybe[string](raw[4]),
+			GameDate:         maybe[string](raw[5]),
+			Matchup:          maybe[string](raw[6]),
+			WL:               maybe[string](raw[7]),
+			MIN:              maybe[float64](raw[8]),
+			PTS:              maybe[float64](raw[9]),
+			FGM:              maybe[float64](raw[10]),
+			FGA:              maybe[float64](raw[11]),
+			FG_PCT:           maybe[float64](raw[12]),
+			FG3M:             maybe[float64](raw[13]),
+			FG3A:             maybe[float64](raw[14]),
+			FG3_PCT:          maybe[float64](raw[15]),
+			FTM:              maybe[float64](raw[16]),
+			FTA:              maybe[float64](raw[17]),
+			FT_PCT:           maybe[float64](raw[18]),
+			OREB:             maybe[float64](raw[19]),
+			DREB:             maybe[float64](raw[20]),
+			REB:              maybe[float64](raw[21]),
+			AST:              maybe[float64](raw[22]),
+			STL:              maybe[float64](raw[23]),
+			BLK:              maybe[float64](raw[24]),
+			TOV:              maybe[float64](raw[25]),
+			PF:               maybe[float64](raw[26]),
+			PlusMinus:        maybe[float64](raw[27]),
 		}
 		games[i] = game
 	}
 	return games
+}
+
+type BoxScoreTraditionalV2Resp struct {
+	ResultsSet []BoxScoreTraditionalV2ResultsSet `json:"resultSets"`
+}
+
+type BoxScoreTraditionalV2ResultsSet struct {
+	Name    string          `json:"name"`
+	Headers []string        `json:"headers"`
+	RowSet  [][]interface{} `json:"rowSet"`
+}
+
+type BoxScoreTraditionalV2Data struct {
+	PlayerStats           []BoxScoreTraditionalV2PlayerStats
+	TeamStats             []BoxScoreTraditionalV2TeamStats
+	TeamStarterBenchStats []BoxScoreTraditionalV2TeamStarterBenchStats
+}
+
+type BoxScoreTraditionalV2PlayerStats struct {
+	GameID           *string
+	TeamId           *float64
+	TeamAbbreviation *string
+	TeamCity         *string
+	PlayerId         *float64
+	PlayerName       *string
+	Nickname         *string
+	StartPosition    *string
+	Comment          *string
+	MIN              *string
+	FGM              *float64
+	FGA              *float64
+	FG_PCT           *float64
+	FG3M             *float64
+	FG3A             *float64
+	FG3_PCT          *float64
+	FTM              *float64
+	FTA              *float64
+	FT_PCT           *float64
+	OREB             *float64
+	DREB             *float64
+	REB              *float64
+	AST              *float64
+	STL              *float64
+	BLK              *float64
+	TO               *float64
+	PF               *float64
+	PTS              *float64
+	PlusMinus        *float64
+}
+
+type BoxScoreTraditionalV2TeamStats struct {
+	GameID           *string
+	TeamID           *float64
+	TeamName         *string
+	TeamAbbreviation *string
+	TeamCity         *string
+	MIN              *float64
+	FGM              *float64
+	FGA              *float64
+	FG_PCT           *float64
+	FG3M             *float64
+	FG3A             *float64
+	FG3_PCT          *float64
+	FTM              *float64
+	FTA              *float64
+	FT_PCT           *float64
+	OREB             *float64
+	DREB             *float64
+	REB              *float64
+	AST              *float64
+	STL              *float64
+	BLK              *float64
+	TO               *float64
+	PF               *float64
+	PTS              *float64
+	PlusMinus        *float64
+}
+
+type BoxScoreTraditionalV2TeamStarterBenchStats struct {
+	GameID           *string
+	TeamID           *float64
+	TeamName         *string
+	TeamAbbreviation *string
+	TeamCity         *string
+	StartersBench    *string
+	MIN              *float64
+	FGM              *float64
+	FGA              *float64
+	FG_PCT           *float64
+	FG3M             *float64
+	FG3A             *float64
+	FG3_PCT          *float64
+	FTM              *float64
+	FTA              *float64
+	FT_PCT           *float64
+	OREB             *float64
+	DREB             *float64
+	REB              *float64
+	AST              *float64
+	STL              *float64
+	BLK              *float64
+	TO               *float64
+	PF               *float64
+	PTS              *float64
+}
+
+func BoxScoreTraditionalV2(gameID string) BoxScoreTraditionalV2Data {
+	url := fmt.Sprintf("https://stats.nba.com/stats/boxscoretraditionalv2?GameID=%s", gameID)
+	req := initNBAReq(url)
+	body := curl(req)
+
+	unmarshalledBody := BoxScoreTraditionalV2Resp{}
+	err := json.Unmarshal(body, &unmarshalledBody)
+	if err != nil {
+		panic(err)
+	}
+
+	boxScore := BoxScoreTraditionalV2Data{}
+
+	for _, set := range unmarshalledBody.ResultsSet {
+		switch set.Name {
+		case "PlayerStats":
+			boxScore.PlayerStats = unmarshalBoxScorePlayerStats(set)
+		case "TeamStats":
+			boxScore.TeamStats = unmarshalBoxScoreTeamStats(set)
+		case "TeamStarterBenchStats":
+			boxScore.TeamStarterBenchStats = unmarshalTeamStarterBenchStats(set)
+		default:
+			panic(fmt.Errorf("invalid ResultsSet found: %v", set.Name))
+		}
+	}
+	return boxScore
+}
+
+func unmarshalBoxScorePlayerStats(set BoxScoreTraditionalV2ResultsSet) []BoxScoreTraditionalV2PlayerStats {
+	expectedHeaders := []string{
+		"GAME_ID",
+		"TEAM_ID",
+		"TEAM_ABBREVIATION",
+		"TEAM_CITY",
+		"PLAYER_ID",
+		"PLAYER_NAME",
+		"NICKNAME",
+		"START_POSITION",
+		"COMMENT",
+		"MIN",
+		"FGM",
+		"FGA",
+		"FG_PCT",
+		"FG3M",
+		"FG3A",
+		"FG3_PCT",
+		"FTM",
+		"FTA",
+		"FT_PCT",
+		"OREB",
+		"DREB",
+		"REB",
+		"AST",
+		"STL",
+		"BLK",
+		"TO",
+		"PF",
+		"PTS",
+		"PLUS_MINUS",
+	}
+	if err := validateHeaders(expectedHeaders, set.Headers); err != nil {
+		panic(err)
+	}
+
+	playerStats := make([]BoxScoreTraditionalV2PlayerStats, len(set.RowSet))
+	for i, raw := range set.RowSet {
+		stats := BoxScoreTraditionalV2PlayerStats{
+			GameID:           maybe[string](raw[0]),
+			TeamId:           maybe[float64](raw[1]),
+			TeamAbbreviation: maybe[string](raw[2]),
+			TeamCity:         maybe[string](raw[3]),
+			PlayerId:         maybe[float64](raw[4]),
+			PlayerName:       maybe[string](raw[5]),
+			Nickname:         maybe[string](raw[6]),
+			StartPosition:    maybe[string](raw[7]),
+			Comment:          maybe[string](raw[8]),
+			MIN:              maybe[string](raw[9]),
+			FGM:              maybe[float64](raw[10]),
+			FGA:              maybe[float64](raw[11]),
+			FG_PCT:           maybe[float64](raw[12]),
+			FG3M:             maybe[float64](raw[13]),
+			FG3A:             maybe[float64](raw[14]),
+			FG3_PCT:          maybe[float64](raw[15]),
+			FTM:              maybe[float64](raw[16]),
+			FTA:              maybe[float64](raw[17]),
+			FT_PCT:           maybe[float64](raw[18]),
+			OREB:             maybe[float64](raw[19]),
+			DREB:             maybe[float64](raw[20]),
+			REB:              maybe[float64](raw[21]),
+			AST:              maybe[float64](raw[22]),
+			STL:              maybe[float64](raw[23]),
+			BLK:              maybe[float64](raw[24]),
+			TO:               maybe[float64](raw[25]),
+			PF:               maybe[float64](raw[26]),
+			PTS:              maybe[float64](raw[27]),
+			PlusMinus:        maybe[float64](raw[28]),
+		}
+		playerStats[i] = stats
+	}
+	return playerStats
+}
+
+func unmarshalBoxScoreTeamStats(set BoxScoreTraditionalV2ResultsSet) []BoxScoreTraditionalV2TeamStats {
+	expectedHeaders := []string{
+		"GAME_ID",
+		"TEAM_ID",
+		"TEAM_NAME",
+		"TEAM_ABBREVIATION",
+		"TEAM_CITY",
+		"MIN",
+		"FGM",
+		"FGA",
+		"FG_PCT",
+		"FG3M",
+		"FG3A",
+		"FG3_PCT",
+		"FTM",
+		"FTA",
+		"FT_PCT",
+		"OREB",
+		"DREB",
+		"REB",
+		"AST",
+		"STL",
+		"BLK",
+		"TO",
+		"PF",
+		"PTS",
+		"PLUS_MINUS",
+	}
+	if err := validateHeaders(expectedHeaders, set.Headers); err != nil {
+		panic(err)
+	}
+
+	teamStats := make([]BoxScoreTraditionalV2TeamStats, len(set.RowSet))
+
+	for i, raw := range set.RowSet {
+		stats := BoxScoreTraditionalV2TeamStats{
+			GameID:           maybe[string](raw[0]),
+			TeamID:           maybe[float64](raw[1]),
+			TeamName:         maybe[string](raw[2]),
+			TeamAbbreviation: maybe[string](raw[3]),
+			TeamCity:         maybe[string](raw[4]),
+			MIN:              maybe[float64](raw[5]),
+			FGM:              maybe[float64](raw[6]),
+			FGA:              maybe[float64](raw[7]),
+			FG_PCT:           maybe[float64](raw[8]),
+			FG3M:             maybe[float64](raw[9]),
+			FG3A:             maybe[float64](raw[10]),
+			FG3_PCT:          maybe[float64](raw[11]),
+			FTM:              maybe[float64](raw[12]),
+			FTA:              maybe[float64](raw[13]),
+			FT_PCT:           maybe[float64](raw[14]),
+			OREB:             maybe[float64](raw[15]),
+			DREB:             maybe[float64](raw[16]),
+			REB:              maybe[float64](raw[17]),
+			AST:              maybe[float64](raw[18]),
+			STL:              maybe[float64](raw[19]),
+			BLK:              maybe[float64](raw[20]),
+			TO:               maybe[float64](raw[21]),
+			PF:               maybe[float64](raw[22]),
+			PTS:              maybe[float64](raw[23]),
+			PlusMinus:        maybe[float64](raw[24]),
+		}
+		teamStats[i] = stats
+	}
+
+	return teamStats
+}
+
+func unmarshalTeamStarterBenchStats(set BoxScoreTraditionalV2ResultsSet) []BoxScoreTraditionalV2TeamStarterBenchStats {
+	expectedHeaders := []string{
+		"GAME_ID",
+		"TEAM_ID",
+		"TEAM_NAME",
+		"TEAM_ABBREVIATION",
+		"TEAM_CITY",
+		"STARTERS_BENCH",
+		"MIN",
+		"FGM",
+		"FGA",
+		"FG_PCT",
+		"FG3M",
+		"FG3A",
+		"FG3_PCT",
+		"FTM",
+		"FTA",
+		"FT_PCT",
+		"OREB",
+		"DREB",
+		"REB",
+		"AST",
+		"STL",
+		"BLK",
+		"TO",
+		"PF",
+		"PTS",
+	}
+	if err := validateHeaders(expectedHeaders, set.Headers); err != nil {
+		panic(err)
+	}
+
+	teamStarterBenchStats := make([]BoxScoreTraditionalV2TeamStarterBenchStats, len(set.RowSet))
+
+	for i, raw := range set.RowSet {
+		stats := BoxScoreTraditionalV2TeamStarterBenchStats{
+			GameID:           maybe[string](raw[0]),
+			TeamID:           maybe[float64](raw[1]),
+			TeamName:         maybe[string](raw[2]),
+			TeamAbbreviation: maybe[string](raw[3]),
+			TeamCity:         maybe[string](raw[4]),
+			StartersBench:    maybe[string](raw[5]),
+			MIN:              maybe[float64](raw[6]),
+			FGM:              maybe[float64](raw[7]),
+			FGA:              maybe[float64](raw[8]),
+			FG_PCT:           maybe[float64](raw[9]),
+			FG3M:             maybe[float64](raw[10]),
+			FG3A:             maybe[float64](raw[11]),
+			FG3_PCT:          maybe[float64](raw[12]),
+			FTM:              maybe[float64](raw[13]),
+			FTA:              maybe[float64](raw[14]),
+			FT_PCT:           maybe[float64](raw[15]),
+			OREB:             maybe[float64](raw[16]),
+			DREB:             maybe[float64](raw[17]),
+			REB:              maybe[float64](raw[18]),
+			AST:              maybe[float64](raw[19]),
+			STL:              maybe[float64](raw[20]),
+			BLK:              maybe[float64](raw[21]),
+			TO:               maybe[float64](raw[22]),
+			PF:               maybe[float64](raw[23]),
+			PTS:              maybe[float64](raw[24]),
+		}
+		teamStarterBenchStats[i] = stats
+	}
+	return teamStarterBenchStats
+}
+
+func validateHeaders(expected, received []string) error {
+	if len(expected) != len(received) {
+		return (fmt.Errorf("expected headers to be of length %d, found %d", len(expected), len(received)))
+	}
+	for i := range expected {
+		if expected[i] != received[i] {
+			return (fmt.Errorf("uh oh! mismatched headers! expected %s, found %s", expected[i], received[i]))
+		}
+	}
+	return nil
 }
 
 func maybe[T any](x any) *T {
@@ -458,7 +897,7 @@ var VideoDetailsAssetContextMeasures = struct {
 	PTS:                "PTS",
 }
 
-func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure VideoDetailsAssetContextMeasure) []VideoDetailAsset {
+func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure VideoDetailsAssetContextMeasure) ([]VideoDetailAsset, error) {
 	url := fmt.Sprintf("https://stats.nba.com/stats/videodetailsasset?AheadBehind=&ClutchTime=&ContextFilter=&ContextMeasure=%s&DateFrom=&DateTo=&EndPeriod=&EndRange=&GameID=%s&GameSegment=&LastNGames=0&LeagueID=&Location=&Month=0&OpponentTeamID=0&Outcome=&Period=0&PlayerID=%d&PointDiff=&Position=&RangeType=&RookieYear=&Season=2024-25&SeasonSegment=&SeasonType=Regular+Season&StartPeriod=&StartRange=&TeamID=%d&VsConference=&VsDivision=", contextMeasure, gameID, int(playerID), int(teamID))
 	req := initNBAReq(url)
 	body := curl(req)
@@ -466,17 +905,16 @@ func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure V
 	unmarshalledBody := VideoDetailsAssetResp{}
 	err := json.Unmarshal(body, &unmarshalledBody)
 	if err != nil && strings.Contains(err.Error(), "invalid character '<'") {
-		fmt.Println(string(body))
-		panic(err)
+		return []VideoDetailAsset{}, fmt.Errorf("received html response, expected json")
 	} else if err != nil {
-		panic(err)
+		return []VideoDetailAsset{}, err
 	}
 
 	Playlist := unmarshalledBody.ResultSets.Playlist
 	VideoUrls := unmarshalledBody.ResultSets.Meta.VideoUrls
 
 	if len(Playlist) != len(VideoUrls) {
-		panic("playlist array and urls array lengths do not match (╯°□°)╯︵ ɹoɹɹƎ")
+		return []VideoDetailAsset{}, fmt.Errorf("playlist array and urls array lengths do not match (╯°□°)╯︵ ɹoɹɹƎ")
 	}
 
 	res := make([]VideoDetailAsset, 0, len(Playlist))
@@ -498,10 +936,14 @@ func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure V
 		}
 		res = append(res, entry)
 	}
-	return res
+	return res, nil
 }
 
+var sem = make(chan int, 50)
+
 func curl(req *http.Request) []byte {
+	sem <- 1
+	defer func() { <-sem }()
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {

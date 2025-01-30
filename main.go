@@ -4,11 +4,14 @@ import (
 	"basketball/config"
 	"basketball/db"
 	"basketball/nba"
+	"basketball/youtube"
 
 	"crypto/md5"
 	_ "embed"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,10 +27,12 @@ import (
 
 var statlinePlayerName string
 var videoPlayerName string
+var Knicks *bool
 
 func init() {
 	flag.StringVarP(&statlinePlayerName, "statline", "s", "", "player name to get statline for")
 	flag.StringVarP(&videoPlayerName, "video", "v", "", "player name to get video of")
+	Knicks = flag.BoolP("knicks", "k", false, "downloads and uploads all knicks highlights")
 	flag.Parse()
 }
 
@@ -38,12 +43,133 @@ func main() {
 	db.ValidateMigrations()
 
 	// scrapeCommonAllPlayers()
+	if *Knicks {
+		Knickerbockers()
+	}
 	if len(videoPlayerName) != 0 {
-		video(videoPlayerName)
+		videoRes, err := Video(videoPlayerName, true)
+		if err != nil {
+			panic(err)
+		}
+		printStatline(videoRes.Game)
 	}
 	if len(statlinePlayerName) != 0 {
-		statline(statlinePlayerName)
+		if err := Statline(statlinePlayerName); err != nil {
+			panic(err)
+		}
 	}
+}
+
+const KnicksTeamId = 1610612752
+
+func Knickerbockers() {
+	games := nba.LeagueGameFinderByTeamID(KnicksTeamId)
+	game := games[0]
+	boxscore := nba.BoxScoreTraditionalV2(*game.GameID)
+
+	wg := sync.WaitGroup{}
+	errMap := sync.Map{}
+	videoMap := sync.Map{}
+
+	fmt.Println("Fetching resources")
+	for _, p := range boxscore.PlayerStats {
+		if int(*p.TeamId) != KnicksTeamId {
+			continue
+		}
+		if p.MIN == nil {
+			continue
+		}
+		split := strings.Split(*p.MIN, ":")
+		minStr, secStr := split[0], split[1]
+		minFloat, err := strconv.ParseFloat(minStr, 64)
+		if err != nil {
+			panic(err)
+		}
+		secFloat, err := strconv.ParseFloat(secStr, 64)
+		if err != nil {
+			panic(err)
+		}
+		min, sec := int(minFloat), int(secFloat)
+		if min > 0 || sec > 0 {
+			wg.Add(1)
+			go func() {
+				defer func() { wg.Done() }()
+				res, err := Video(*p.PlayerName, false)
+				if err != nil {
+					errMap.Store(*p.PlayerName, err)
+				} else {
+					videoMap.Store(*p.PlayerName, res)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+
+	fmt.Println("Displaying errors...")
+	errMap.Range(func(key, value any) bool {
+		// errFlag = true
+		fmt.Println("player error:", key.(string))
+		fmt.Println(value.(error))
+		return true
+	})
+
+	// if errFlag{
+	var input string
+	fmt.Println("Upload to Youtube? (y/n)")
+	fmt.Scanln(&input)
+	if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
+		videoMap.Range(func(key, value any) bool {
+			videoRes := value.(VideoRes)
+			_ = os.Remove(videoRes.OutputFile)
+			return true
+		})
+		return
+	}
+	// }
+	oauthConfig, err := youtube.OAuthConfig()
+	if err != nil {
+		videoMap.Range(func(key, value any) bool {
+			videoRes := value.(VideoRes)
+			_ = os.Remove(videoRes.OutputFile)
+			return true
+		})
+		panic(err)
+	}
+	token, err := youtube.GetToken(oauthConfig)
+	if err != nil {
+		videoMap.Range(func(key, value any) bool {
+			videoRes := value.(VideoRes)
+			_ = os.Remove(videoRes.OutputFile)
+			return true
+		})
+		panic(err)
+	}
+
+	videoMap.Range(func(playerName, value any) bool {
+		videoRes := value.(VideoRes)
+		game := videoRes.Game
+		title, err := title(game)
+		if err != nil {
+			fmt.Println("failed while trying to generate youtube video title for", playerName.(string))
+			fmt.Println(err)
+			return true
+		}
+		description, err := statString(game)
+		if err != nil {
+			fmt.Println("failed while trying to generate youtube video description for", playerName.(string))
+			fmt.Println(err)
+			return true
+		}
+
+		wg.Add(1)
+		go func() {
+			defer func() { wg.Done() }()
+			youtube.UploadFile(videoRes.OutputFile, title, description, *game.PlayerName, *game.TeamName, oauthConfig, token)
+			_ = os.Remove(videoRes.OutputFile)
+		}()
+		return true
+	})
+	wg.Wait()
 }
 
 func scrapeCommonAllPlayers() {
@@ -51,14 +177,36 @@ func scrapeCommonAllPlayers() {
 	db.InsertPlayers(players)
 }
 
-func statline(playerCode string) {
-	id := db.PlayerIDFromCode(playerCode)
-	games := nba.LeagueGameFinderByPlayerID(id)
+func Statline(playerCode string) error {
+	id, err := db.PlayerIDFromCode(playerCode)
+	if err != nil {
+		return err
+	}
+	games, err := nba.LeagueGameFinderByPlayerID(id)
+	if err != nil {
+		return err
+	}
 	game := games[0]
 	printStatline(game)
+	return nil
 }
 
-func printStatline(game nba.LeagueGameFinderByPlayerGame) {
+func printStatline(game nba.LeagueGameFinderGame) {
+	fmt.Println("GameID:", *game.GameID)
+	fmt.Println("PlayerID:", int(*game.PlayerId))
+	title, err := title(game)
+	if err != nil {
+		panic(err)
+	}
+	statline, err := statString(game)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(title)
+	fmt.Println(statline)
+}
+
+func statString(game nba.LeagueGameFinderGame) (string, error) {
 	statStrings := []string{
 		"Point",
 		"Rebound",
@@ -68,8 +216,6 @@ func printStatline(game nba.LeagueGameFinderByPlayerGame) {
 		"Personal Foul",
 		"Turnover",
 	}
-	fmt.Println("GameID:", *game.GameID)
-	fmt.Println("PlayerID:", int(*game.PlayerId))
 	stats := []float64{
 		*game.PTS,
 		*game.REB,
@@ -82,7 +228,7 @@ func printStatline(game nba.LeagueGameFinderByPlayerGame) {
 	statline := []string{}
 
 	if len(stats) != len(statStrings) {
-		panic(fmt.Errorf("length of stats (%d) != length of statStrings (%d)", len(stats), len(statStrings)))
+		return "", fmt.Errorf("length of stats (%d) != length of statStrings (%d)", len(stats), len(statStrings))
 	}
 
 	for i := range stats {
@@ -107,19 +253,22 @@ func printStatline(game nba.LeagueGameFinderByPlayerGame) {
 		pm := fmt.Sprintf("%d in %d minutes", int(*game.PlusMinus), int(*game.MIN))
 		statline = append(statline, pm)
 	}
+	return strings.Join(statline, ", "), nil
+}
 
+func title(game nba.LeagueGameFinderGame) (string, error) {
 	parsedDate, err := time.Parse("2006-01-02", *game.GameDate)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
+
 	formatDate := parsedDate.Format("01.02.2006")
 
 	if *game.PlayerName == "Miles McBride" {
-		fmt.Printf("Miles \"Deuce\" McBride | %s %s\n", *game.Matchup, formatDate)
+		return fmt.Sprintf("Miles \"Deuce\" McBride | %s %s", *game.Matchup, formatDate), nil
 	} else {
-		fmt.Printf("%s | %s %s\n", *game.PlayerName, *game.Matchup, formatDate)
+		return fmt.Sprintf("%s | %s %s", *game.PlayerName, *game.Matchup, formatDate), nil
 	}
-	fmt.Println(strings.Join(statline, ", "))
 }
 
 func appendAndPluralize(stat float64, statString string, statline *[]string) {
@@ -142,12 +291,22 @@ func floatPercentage(f float64) string {
 	}
 }
 
-const KnicksTeamId = 1610612752
+type VideoRes struct {
+	Game       nba.LeagueGameFinderGame
+	OutputFile string
+}
 
-func video(playerCode string) {
-	id := db.PlayerIDFromCode(playerCode)
-	games := nba.LeagueGameFinderByPlayerID(id)
-	game := games[0]
+func Video(playerCode string, toDownloadsDir bool) (VideoRes, error) {
+	id, err := db.PlayerIDFromCode(playerCode)
+	res := VideoRes{}
+	if err != nil {
+		return res, err
+	}
+	games, err := nba.LeagueGameFinderByPlayerID(id)
+	if err != nil {
+		return res, err
+	}
+	res.Game = games[0]
 
 	measures := []nba.VideoDetailsAssetContextMeasure{
 		nba.VideoDetailsAssetContextMeasures.FGA,
@@ -155,29 +314,71 @@ func video(playerCode string) {
 		nba.VideoDetailsAssetContextMeasures.AST,
 		nba.VideoDetailsAssetContextMeasures.STL,
 		nba.VideoDetailsAssetContextMeasures.TOV,
+		nba.VideoDetailsAssetContextMeasures.BLK,
 	}
-	assets := []nba.VideoDetailAsset{}
-	getVideoAssets(game, measures, &assets)
-	sortAssets(&assets)
-	tmpDir := mkdirTmp(&game)
-	downloadAssets(&assets, tmpDir)
-	ffmpeg(tmpDir, len(assets))
-	printStatline(game)
+	assets, err := getVideoAssets(res.Game, measures)
+	if err != nil {
+		return res, err
+	}
+	if err := sortAssets(&assets); err != nil {
+		return res, err
+	}
+	tmpDir, err := mkdirTmp(&res.Game)
+	if err != nil {
+		return res, err
+	}
+	if err := downloadAssets(&assets, tmpDir); err != nil {
+		return res, err
+	}
+	outputFile, err := ffmpeg(tmpDir, len(assets))
+	if err != nil {
+		return res, err
+	}
+	if toDownloadsDir {
+		timeString := fmt.Sprintf("%d", time.Now().Unix())
+		sum := md5.Sum([]byte(timeString))
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return res, err
+		}
+		downloadFile := home + "/Downloads/" + fmt.Sprintf("%x.mp4", sum)
+		os.Rename(outputFile, downloadFile)
+		outputFile = downloadFile
+	}
+	res.OutputFile = outputFile
+	return res, nil
 }
 
-func getVideoAssets(game nba.LeagueGameFinderByPlayerGame, measures []nba.VideoDetailsAssetContextMeasure, assets *[]nba.VideoDetailAsset) {
+var getVideoAssetsSem = make(chan int, 1)
+
+func getVideoAssets(game nba.LeagueGameFinderGame, measures []nba.VideoDetailsAssetContextMeasure) ([]nba.VideoDetailAsset, error) {
 	wg := sync.WaitGroup{}
-	errChan := make(chan error)
+	errChan := make(chan error, len(measures))
+	gaMu := sync.Mutex{}
+	gameAssets := []nba.VideoDetailAsset{}
 	for _, m := range measures {
 		wg.Add(1)
-		go getVideoAssetsByMeasure(game, m, assets, &wg, &errChan)
+		go func() {
+			defer wg.Done()
+			measureAssets, err := getVideoAssetsByMeasure(game, m)
+			if err != nil {
+				errChan <- err
+			}
+			gaMu.Lock()
+			gameAssets = append(gameAssets, measureAssets...)
+			gaMu.Unlock()
+		}()
 	}
 
 	wg.Wait()
 	close(errChan)
 
+	getVideoAssetsSem <- 1
+	defer func() { <-getVideoAssetsSem }()
+
 	n := len(errChan)
 	if n != 0 {
+		fmt.Println(*game.PlayerName)
 		fmt.Printf("encountered %d errors when querying for assets\n", len(errChan))
 	}
 	i := 0
@@ -188,60 +389,75 @@ func getVideoAssets(game nba.LeagueGameFinderByPlayerGame, measures []nba.VideoD
 		fmt.Println("Would you like to continue? (y/n)")
 		fmt.Scan(&input)
 		if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
-			os.Exit(1)
+			return []nba.VideoDetailAsset{}, fmt.Errorf("user aborted: %s", e.Error())
 		}
 		i++
 	}
+
+	if len(gameAssets) == 0 {
+		return nil, fmt.Errorf("no assets found")
+	}
+
+	return gameAssets, nil
 }
 
-func getVideoAssetsByMeasure(game nba.LeagueGameFinderByPlayerGame, measure nba.VideoDetailsAssetContextMeasure, gameAssets *[]nba.VideoDetailAsset, wg *sync.WaitGroup, errChan *chan error) {
-	defer wg.Done()
-	assets := []nba.VideoDetailAsset{}
-	for _, a := range nba.VideoDetailsAsset(*game.GameID, *game.PlayerId, *game.TeamID, measure) {
+func getVideoAssetsByMeasure(game nba.LeagueGameFinderGame, measure nba.VideoDetailsAssetContextMeasure) ([]nba.VideoDetailAsset, error) {
+	measureAssets := []nba.VideoDetailAsset{}
+	apiRes, err := nba.VideoDetailsAsset(*game.GameID, *game.PlayerId, *game.TeamID, measure)
+	if err != nil {
+		return measureAssets, err
+	}
+
+	// filter out assets with no URL
+	for _, a := range apiRes {
 		if a.LargeUrl == nil && a.MedUrl == nil && a.SmallUrl == nil {
 			continue
 		}
-		assets = append(assets, a)
+		measureAssets = append(measureAssets, a)
 	}
-
-	(*gameAssets) = append(*gameAssets, assets...)
 
 	switch measure {
 	case "FGA":
-		if len(assets) != int(*game.FGA) {
-			*errChan <- fmt.Errorf("expected %d FGA assets, have %d", int(*game.FGA), len(assets))
+		if len(measureAssets) != int(*game.FGA) {
+			return measureAssets, fmt.Errorf("expected %d FGA assets, have %d", int(*game.FGA), len(measureAssets))
 		}
 	case "REB":
-		if len(assets) != int(*game.REB) {
-			*errChan <- fmt.Errorf("expected %d REB assets, have %d", int(*game.REB), len(assets))
+		if len(measureAssets) != int(*game.REB) {
+			return measureAssets, fmt.Errorf("expected %d REB assets, have %d", int(*game.REB), len(measureAssets))
 		}
 	case "AST":
-		if len(assets) != int(*game.AST) {
-			*errChan <- fmt.Errorf("expected %d AST assets, have %d", int(*game.AST), len(assets))
+		if len(measureAssets) != int(*game.AST) {
+			return measureAssets, fmt.Errorf("expected %d AST assets, have %d", int(*game.AST), len(measureAssets))
 		}
 	case "STL":
-		if len(assets) != int(*game.STL) {
-			*errChan <- fmt.Errorf("expected %d STL assets, have %d", int(*game.STL), len(assets))
+		if len(measureAssets) != int(*game.STL) {
+			return measureAssets, fmt.Errorf("expected %d STL assets, have %d", int(*game.STL), len(measureAssets))
 		}
 	case "TOV":
-		if len(assets) != int(*game.TOV) {
-			*errChan <- fmt.Errorf("expected %d TOV assets, have %d", int(*game.TOV), len(assets))
+		if len(measureAssets) != int(*game.TOV) {
+			return measureAssets, fmt.Errorf("expected %d TOV assets, have %d", int(*game.TOV), len(measureAssets))
 		}
 	case "PF":
-		if len(assets) != int(*game.PF) {
-			*errChan <- fmt.Errorf("expected %d PF assets, have %d", int(*game.PF), len(assets))
+		if len(measureAssets) != int(*game.PF) {
+			return measureAssets, fmt.Errorf("expected %d PF assets, have %d", int(*game.PF), len(measureAssets))
 		}
 	case "FTA":
-		if len(assets) != int(*game.FTA) {
-			*errChan <- fmt.Errorf("expected %d FTA assets, have %d", int(*game.FTA), len(assets))
+		if len(measureAssets) != int(*game.FTA) {
+			return measureAssets, fmt.Errorf("expected %d FTA assets, have %d", int(*game.FTA), len(measureAssets))
+		}
+	case "BLK":
+		if len(measureAssets) != int(*game.BLK) {
+			return measureAssets, fmt.Errorf("expected %d BLK assets, have %d", int(*game.BLK), len(measureAssets))
 		}
 	default:
-		*errChan <- fmt.Errorf("unexpected context measure provided: \"%s\"", string(measure))
+		return measureAssets, fmt.Errorf("unexpected context measure provided: \"%s\"", string(measure))
 	}
+	return measureAssets, nil
 }
 
-func sortAssets(assets *[]nba.VideoDetailAsset) {
+func sortAssets(assets *[]nba.VideoDetailAsset) error {
 	re := regexp.MustCompile(`(?:https:\/\/videos.nba.com\/nba\/pbp\/media\/\d+\/\d+\/\d+\/)(\d+)\/(\d+)`)
+	errors := []error{}
 	slices.SortStableFunc(*assets, func(a, b nba.VideoDetailAsset) int {
 		var urlA string
 		if a.LargeUrl != nil {
@@ -251,7 +467,8 @@ func sortAssets(assets *[]nba.VideoDetailAsset) {
 		} else if a.SmallUrl != nil {
 			urlA = *a.SmallUrl
 		} else {
-			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *a.Description))
+			errors = append(errors, fmt.Errorf("uh oh this highlight lacks a valid url: %s", *a.Description))
+			return 0
 		}
 
 		var urlB string
@@ -262,7 +479,8 @@ func sortAssets(assets *[]nba.VideoDetailAsset) {
 		} else if b.SmallUrl != nil {
 			urlB = *b.SmallUrl
 		} else {
-			panic(fmt.Errorf("uh oh this highlight lacks a valid url: %s", *b.Description))
+			errors = append(errors, fmt.Errorf("uh oh this highlight lacks a valid url: %s", *b.Description))
+			return 0
 		}
 
 		matchesA := re.FindStringSubmatch(urlA)
@@ -273,61 +491,70 @@ func sortAssets(assets *[]nba.VideoDetailAsset) {
 
 		numA, err := strconv.Atoi(sortNumA)
 		if err != nil {
-			panic(err)
+			errors = append(errors, err)
+			return 0
 		}
 		numB, err := strconv.Atoi(sortNumB)
 		if err != nil {
-			panic(err)
+			errors = append(errors, err)
+			return 0
 		}
 
 		return numA - numB
 	})
+	if len(errors) > 0 {
+		return gigaError(errors)
+	}
+	return nil
 }
 
-func mkdirTmp(game *nba.LeagueGameFinderByPlayerGame) string {
+func mkdirTmp(game *nba.LeagueGameFinderGame) (string, error) {
 	parsedDate, err := time.Parse("2006-01-02", *(*game).GameDate)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	formatDate := parsedDate.Format("01.02.2006")
 	tmpDirPattern := strings.ReplaceAll(*(*game).PlayerName, " ", "_") + "_" + formatDate + "_"
 	tmpDir, err := os.MkdirTemp(os.TempDir(), tmpDirPattern)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return tmpDir
+	return tmpDir, nil
 }
 
-func downloadAssets(assets *[]nba.VideoDetailAsset, tmpDir string) {
-
-	fmt.Println("Downloading assets...")
+func downloadAssets(assets *[]nba.VideoDetailAsset, tmpDir string) error {
 	wg := sync.WaitGroup{}
 	errChan := make(chan error, len(*assets))
 
 	for i, asset := range *assets {
 		filename := fmt.Sprintf("%s/%06d.mp4", tmpDir, i)
 		wg.Add(1)
-		go downloadVideoUrl(filename, asset, &wg, errChan)
+		go func() {
+			defer wg.Done()
+			err := downloadVideoUrl(filename, asset)
+			if err != nil {
+				errChan <- err
+			}
+		}()
 	}
 
 	wg.Wait()
 	close(errChan)
 
-	failure := len(errChan) > 0
+	errors := []error{}
 	for err := range errChan {
 		if err != nil {
-			fmt.Println(err)
+			errors = append(errors, err)
 		}
 	}
-	if failure {
+	if len(errors) > 0 {
 		_ = os.RemoveAll(tmpDir)
-		panic("womp womp")
+		return gigaError(errors)
 	}
+	return nil
 }
 
-func downloadVideoUrl(filepath string, asset nba.VideoDetailAsset, wg *sync.WaitGroup, errChan chan error) {
-	defer wg.Done()
-
+func downloadVideoUrl(filepath string, asset nba.VideoDetailAsset) error {
 	var url string
 	if asset.LargeUrl != nil {
 		url = *asset.LargeUrl
@@ -336,76 +563,86 @@ func downloadVideoUrl(filepath string, asset nba.VideoDetailAsset, wg *sync.Wait
 	} else {
 		url = *asset.SmallUrl
 	}
+	if err := curlToFile(url, filepath); err != nil {
+		return err
+	}
+	return nil
+}
 
+// ffmpeg is written in c and assembly language
+func ffmpeg(tmpDir string, count int) (string, error) {
+	if err := os.Symlink(config.EndScreenFile, fmt.Sprintf("%s/%06d.mp4", tmpDir, count)); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", err
+	}
+
+	file, err := os.Create(tmpDir + "/files.txt")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	for i := 0; i <= count; i++ {
+		_, err := file.Write([]byte(fmt.Sprintf("file '%06d.mp4'\n", i)))
+		if err != nil {
+			return "", err
+		}
+	}
+
+	timeString := fmt.Sprintf("%d%d", time.Now().Unix(), rand.Intn(math.MaxInt64))
+	sum := md5.Sum([]byte(timeString))
+	outputFileName := os.TempDir() + fmt.Sprintf("%x", sum) + ".mp4"
+
+	args := []string{"-hide_banner", "-v", "fatal", "-f", "concat", "-safe", "0", "-vsync", "0", "-i", fmt.Sprintf("%s/files.txt", tmpDir), "-c", "copy", outputFileName}
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stdin, cmd.Stderr, cmd.Stdout = os.Stdin, os.Stderr, os.Stdout
+	// fmt.Println(strings.Join(cmd.Args, " "))
+
+	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		_ = os.Remove(outputFileName)
+		return "", err
+	}
+	_ = os.RemoveAll(tmpDir)
+	return outputFileName, nil
+}
+
+func gigaError(slice []error) error {
+	errBytes := []byte{}
+	for i := range slice {
+		errBytes = append(errBytes, []byte(slice[i].Error())...)
+		errBytes = append(errBytes, '\n')
+	}
+	return fmt.Errorf("%s", string(errBytes))
+}
+
+var sem = make(chan int, 50)
+
+func curlToFile(url, filepath string) error {
+	sem <- 1
+	defer func() { <-sem }()
 	client := &http.Client{}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
 	out, err := os.Create(filepath)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
-	fmt.Println("Downloaded:", *asset.Description)
-}
-
-// ffmpeg is written in c and assembly language
-func ffmpeg(tmpDir string, count int) {
-	if err := os.Symlink(config.EndScreenFile, fmt.Sprintf("%s/%06d.mp4", tmpDir, count)); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		panic(err)
-	}
-
-	file, err := os.Create(tmpDir + "/files.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-
-	for i := 0; i <= count; i++ {
-		file.Write([]byte(fmt.Sprintf("file '%06d.mp4'\n", i)))
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		file.Close()
-		os.RemoveAll(tmpDir)
-		panic(err)
-	}
-
-	timeString := fmt.Sprintf("%d", time.Now().Unix())
-	sum := md5.Sum([]byte(timeString))
-	outputFileName := home + "/Downloads/" + fmt.Sprintf("%x", sum) + ".mp4"
-
-	args := []string{"-f", "concat", "-safe", "0", "-vsync", "0", "-i", fmt.Sprintf("%s/files.txt", tmpDir), "-c", "copy", outputFileName}
-	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stdin, cmd.Stderr, cmd.Stdout = os.Stdin, os.Stderr, os.Stdout
-	fmt.Println(strings.Join(cmd.Args, " "))
-
-	if err := cmd.Run(); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		panic(err)
-	}
-
-	if err := os.RemoveAll(tmpDir); err != nil {
-		panic(err)
-	}
+	return nil
 }
