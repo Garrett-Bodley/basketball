@@ -49,11 +49,11 @@ func UploadFile(filepath, title, description, playerName, teamName string, oauth
 	}
 	fmt.Println("Uploading to youtube...")
 	call := service.Videos.Insert([]string{"snippet", "status"}, upload)
-	response, err := call.Media(file).Do()
+	resp, err := call.Media(file).Do()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Upload successful :D! Video ID:", response.Id)
+	fmt.Println("Upload successful :D!", title, resp.Id)
 }
 
 func OAuthConfig() (*oauth2.Config, error) {
@@ -76,7 +76,7 @@ func GetToken(oauthConfig *oauth2.Config) (*oauth2.Token, error) {
 		if err != nil {
 			return nil, err
 		}
-		saveToken(config.TokenFile, token)
+		SaveToken(config.TokenFile, token)
 	}
 	return token, nil
 }
@@ -108,7 +108,7 @@ func getTokenFromWeb(oauthConfig oauth2.Config) (*oauth2.Token, error) {
 	return token, nil
 }
 
-func saveToken(file string, token *oauth2.Token) {
+func SaveToken(file string, token *oauth2.Token) {
 	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		panic(fmt.Errorf("unable to cache OAuth token: %v", err))

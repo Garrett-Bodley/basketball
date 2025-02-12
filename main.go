@@ -6,6 +6,7 @@ import (
 	"basketball/nba"
 	"basketball/youtube"
 
+	"context"
 	"crypto/md5"
 	_ "embed"
 	"fmt"
@@ -63,15 +64,18 @@ func main() {
 const KnicksTeamId = 1610612752
 
 func Knickerbockers() {
+	var input string
+	fmt.Println("finding non-situational players...")
 	games := nba.LeagueGameFinderByTeamID(KnicksTeamId)
 	game := games[0]
 	boxscore := nba.BoxScoreTraditionalV2(*game.GameID)
 
 	wg := sync.WaitGroup{}
+	playerGameMap := map[string]nba.LeagueGameFinderGame{}
 	errMap := sync.Map{}
 	videoMap := sync.Map{}
 
-	fmt.Println("Fetching resources")
+	notSituational := []nba.BoxScoreTraditionalV2PlayerStats{}
 	for _, p := range boxscore.PlayerStats {
 		if int(*p.TeamId) != KnicksTeamId {
 			continue
@@ -91,32 +95,90 @@ func Knickerbockers() {
 		}
 		min, sec := int(minFloat), int(secFloat)
 		if min > 0 || sec > 0 {
-			wg.Add(1)
-			go func() {
-				defer func() { wg.Done() }()
-				res, err := Video(*p.PlayerName, false)
-				if err != nil {
-					errMap.Store(*p.PlayerName, err)
-				} else {
-					videoMap.Store(*p.PlayerName, res)
-				}
-			}()
+			notSituational = append(notSituational, p)
 		}
 	}
+
+	measures := []nba.VideoDetailsAssetContextMeasure{
+		nba.VideoDetailsAssetContextMeasures.FGA,
+		nba.VideoDetailsAssetContextMeasures.REB,
+		nba.VideoDetailsAssetContextMeasures.AST,
+		nba.VideoDetailsAssetContextMeasures.STL,
+		nba.VideoDetailsAssetContextMeasures.TOV,
+		nba.VideoDetailsAssetContextMeasures.BLK,
+	}
+
+	fmt.Println("querying for asset urls...")
+	teamAssets := map[string][]nba.VideoDetailAsset{}
+	for _, p := range notSituational {
+		id, err := db.PlayerIDFromCode(*p.PlayerName)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		games, err := nba.LeagueGameFinderByPlayerID(id)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		playerGame := games[0]
+		playerGameMap[*p.PlayerName] = playerGame
+
+		pAssets, err := getVideoAssets(playerGame, measures)
+		if err != nil {
+			fmt.Println(*p.PlayerName, err)
+			continue
+		}
+		if err := sortAssets(&pAssets); err != nil {
+			fmt.Println(*p.PlayerName, err)
+			continue
+		}
+		teamAssets[*p.PlayerName] = pAssets
+	}
+
+	fmt.Println("download clips? (y/n)")
+	fmt.Scan(&input)
+	if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
+		return
+	}
+
+	fmt.Println("downloading clips and concatenating...")
+	for k, v := range teamAssets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tmpDir, err := mkdirTmp(k, &game)
+			if err != nil {
+				errMap.Store(k, err)
+				return
+			}
+			if err := downloadAssets(&v, tmpDir); err != nil {
+				errMap.Store(k, err)
+				_ = os.RemoveAll(tmpDir)
+				return
+			}
+			outputFile, err := ffmpeg(tmpDir, len(v))
+			if err != nil {
+				errMap.Store(k, err)
+				_ = os.RemoveAll(tmpDir)
+				_ = os.RemoveAll(outputFile)
+				return
+			}
+			videoMap.Store(k, VideoRes{Game: playerGameMap[k], OutputFile: outputFile})
+		}()
+	}
+
 	wg.Wait()
 
 	fmt.Println("Displaying errors...")
 	errMap.Range(func(key, value any) bool {
-		// errFlag = true
 		fmt.Println("player error:", key.(string))
 		fmt.Println(value.(error))
 		return true
 	})
 
-	// if errFlag{
-	var input string
 	fmt.Println("Upload to Youtube? (y/n)")
-	fmt.Scanln(&input)
+	fmt.Scan(&input)
 	if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
 		videoMap.Range(func(key, value any) bool {
 			videoRes := value.(VideoRes)
@@ -125,7 +187,7 @@ func Knickerbockers() {
 		})
 		return
 	}
-	// }
+
 	oauthConfig, err := youtube.OAuthConfig()
 	if err != nil {
 		videoMap.Range(func(key, value any) bool {
@@ -143,6 +205,22 @@ func Knickerbockers() {
 			return true
 		})
 		panic(err)
+	}
+
+	tokenSource := oauthConfig.TokenSource(context.Background(), token)
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		videoMap.Range(func(key, value any) bool {
+			videoRes := value.(VideoRes)
+			_ = os.Remove(videoRes.OutputFile)
+			return true
+		})
+		panic(err)
+	}
+
+	if newToken.AccessToken != token.AccessToken {
+		youtube.SaveToken(config.TokenFile, newToken)
+		token = newToken
 	}
 
 	videoMap.Range(func(playerName, value any) bool {
@@ -323,7 +401,7 @@ func Video(playerCode string, toDownloadsDir bool) (VideoRes, error) {
 	if err := sortAssets(&assets); err != nil {
 		return res, err
 	}
-	tmpDir, err := mkdirTmp(&res.Game)
+	tmpDir, err := mkdirTmp(playerCode, &res.Game)
 	if err != nil {
 		return res, err
 	}
@@ -349,8 +427,6 @@ func Video(playerCode string, toDownloadsDir bool) (VideoRes, error) {
 	return res, nil
 }
 
-var getVideoAssetsSem = make(chan int, 1)
-
 func getVideoAssets(game nba.LeagueGameFinderGame, measures []nba.VideoDetailsAssetContextMeasure) ([]nba.VideoDetailAsset, error) {
 	wg := sync.WaitGroup{}
 	errChan := make(chan error, len(measures))
@@ -372,9 +448,6 @@ func getVideoAssets(game nba.LeagueGameFinderGame, measures []nba.VideoDetailsAs
 
 	wg.Wait()
 	close(errChan)
-
-	getVideoAssetsSem <- 1
-	defer func() { <-getVideoAssetsSem }()
 
 	n := len(errChan)
 	if n != 0 {
@@ -405,7 +478,7 @@ func getVideoAssetsByMeasure(game nba.LeagueGameFinderGame, measure nba.VideoDet
 	measureAssets := []nba.VideoDetailAsset{}
 	apiRes, err := nba.VideoDetailsAsset(*game.GameID, *game.PlayerId, *game.TeamID, measure)
 	if err != nil {
-		return measureAssets, err
+		return nil, err
 	}
 
 	// filter out assets with no URL
@@ -508,13 +581,13 @@ func sortAssets(assets *[]nba.VideoDetailAsset) error {
 	return nil
 }
 
-func mkdirTmp(game *nba.LeagueGameFinderGame) (string, error) {
+func mkdirTmp(playerName string, game *nba.LeagueGameFinderGame) (string, error) {
 	parsedDate, err := time.Parse("2006-01-02", *(*game).GameDate)
 	if err != nil {
 		return "", err
 	}
 	formatDate := parsedDate.Format("01.02.2006")
-	tmpDirPattern := strings.ReplaceAll(*(*game).PlayerName, " ", "_") + "_" + formatDate + "_"
+	tmpDirPattern := strings.ReplaceAll(playerName, " ", "_") + "_" + formatDate + "_"
 	tmpDir, err := os.MkdirTemp(os.TempDir(), tmpDirPattern)
 	if err != nil {
 		return "", err
