@@ -75,7 +75,7 @@ func Knickerbockers() {
 	errMap := sync.Map{}
 	videoMap := sync.Map{}
 
-	notSituational := []nba.BoxScoreTraditionalV2PlayerStats{}
+	nonSituational := []nba.BoxScoreTraditionalV2PlayerStats{}
 	for _, p := range boxscore.PlayerStats {
 		if int(*p.TeamId) != KnicksTeamId {
 			continue
@@ -95,7 +95,7 @@ func Knickerbockers() {
 		}
 		min, sec := int(minFloat), int(secFloat)
 		if min > 0 || sec > 0 {
-			notSituational = append(notSituational, p)
+			nonSituational = append(nonSituational, p)
 		}
 	}
 
@@ -108,9 +108,10 @@ func Knickerbockers() {
 		nba.VideoDetailsAssetContextMeasures.BLK,
 	}
 
+        fmt.Printf("%d non-situational players\n", len(nonSituational))
 	fmt.Println("querying for asset urls...")
 	teamAssets := map[string][]nba.VideoDetailAsset{}
-	for _, p := range notSituational {
+	for _, p := range nonSituational {
 		id, err := db.PlayerIDFromCode(*p.PlayerName)
 		if err != nil {
 			fmt.Println(err)

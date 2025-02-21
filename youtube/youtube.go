@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/youtube/v3"
 )
 
@@ -38,7 +39,7 @@ func UploadFile(filepath, title, description, playerName, teamName string, oauth
 
 	// Set the privacy status
 	status := &youtube.VideoStatus{
-		PrivacyStatus:           "private",
+		PrivacyStatus:           "public",
 		MadeForKids:             false,
 		SelfDeclaredMadeForKids: false,
 	}
@@ -49,7 +50,7 @@ func UploadFile(filepath, title, description, playerName, teamName string, oauth
 	}
 	fmt.Println("Uploading to youtube...")
 	call := service.Videos.Insert([]string{"snippet", "status"}, upload)
-	resp, err := call.Media(file).Do()
+	resp, err := call.Media(file, googleapi.ChunkSize(32 * 1024 * 1024)).Do()
 	if err != nil {
 		panic(err)
 	}
@@ -77,6 +78,16 @@ func GetToken(oauthConfig *oauth2.Config) (*oauth2.Token, error) {
 			return nil, err
 		}
 		SaveToken(config.TokenFile, token)
+	}else{
+		tokenSource := oauthConfig.TokenSource(context.Background(), token)
+		newTok, err := tokenSource.Token()
+		if err != nil {
+			return nil, err
+		}
+		if newTok.AccessToken != token.AccessToken {
+			SaveToken(config.TokenFile, newTok)
+			token = newTok
+		}
 	}
 	return token, nil
 }
