@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func init() {
@@ -44,7 +45,9 @@ func initNBAReq(url string) *http.Request {
 	}
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Referer", "https://www.nba.com/")
-	req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15")
+	req.Header.Add("X-Please-Hire-Me", "https://github.com/Garrett-Bodley")
+	req.Header.Add("X-Sorry-If-I-Am-Blowing-Up-Your-Endpoints", "Lmk if anything is causing issues on your end! I don't want to break anything! Garrett.Bodley@gmail.com (ㅅ´ ˘ `)")
 	return req
 }
 
@@ -905,7 +908,8 @@ func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure V
 	unmarshalledBody := VideoDetailsAssetResp{}
 	err := json.Unmarshal(body, &unmarshalledBody)
 	if err != nil && strings.Contains(err.Error(), "invalid character '<'") {
-		return []VideoDetailAsset{}, fmt.Errorf("received html response, expected json")
+		// fmt.Println(string(body))
+		return []VideoDetailAsset{}, fmt.Errorf("%s: received html response, expected json", contextMeasure)
 	} else if err != nil {
 		return []VideoDetailAsset{}, err
 	}
@@ -939,12 +943,97 @@ func VideoDetailsAsset(gameID string, playerID, teamID float64, contextMeasure V
 	return res, nil
 }
 
+
+type BoxScoreTraditionalV3Resp struct {
+	Meta struct {
+		Version *float64 `json:"version"`
+		Request *string  `json:"request"`
+		Time    *string  `json:"time"`
+	} `json:"meta"`
+	BoxScoreTraditional BoxScoreTraditionalV3Data `json:"boxScoreTraditional"`
+}
+
+type BoxScoreTraditionalV3Data struct {
+	GameId     *string                        `json:"gameId"`
+	AwayTeamId *float64                       `json:"awayTeamId"`
+	HomeTeamId *float64                       `json:"homeTeamId"`
+	HomeTeam   BoxScoreTraditionalV3TeamStats `json:"homeTeam"`
+	AwayTeam   BoxScoreTraditionalV3TeamStats `json:"awayTeam"`
+}
+
+type BoxScoreTraditionalV3TeamStats struct {
+	TeamId      *float64                      `json:"teamId"`
+	TeamCity    *string                       `json:"teamCity"`
+	TeamName    *string                       `json:"teamName"`
+	TeamTricode *string                       `json:"teamTricode"`
+	TeamSlug    *string                       `json:"teamSlug"`
+	Players     []BoxScoreTraditionalV3Player `json:"players"`
+	Statistics  BoxScoreTraditionalV3Stats    `json:"statistics"`
+	Starters    BoxScoreTraditionalV3Stats    `json:"starters"`
+	Bench       BoxScoreTraditionalV3Stats    `json:"bench"`
+}
+
+type BoxScoreTraditionalV3Player struct {
+	PersonId   *float64                   `json:"personId"`
+	FirstName  *string                    `json:"firstName"`
+	FamilyName *string                    `json:"familyName"`
+	NameI      *string                    `json:"nameI"`
+	PlayerSlug *string                    `json:"playerSlug"`
+	Position   *string                    `json:"position"`
+	Comment    *string                    `json:"comment"`
+	JerseyNum  *string                    `json:"jerseyNum"`
+	Statistics BoxScoreTraditionalV3Stats `json:"statistics"`
+}
+
+type BoxScoreTraditionalV3Stats struct {
+	Minutes                 *string  `json:"minutes"`
+	FieldGoalsMade          *float64 `json:"fieldGoalsMade"`
+	FieldGoalsAttempted     *float64 `json:"fieldGoalsAttempted"`
+	FieldGoalsPercentage    *float64 `json:"fieldGoalsPercentage"`
+	ThreePointersMade       *float64 `json:"threePointersMade"`
+	ThreePointersAttempted  *float64 `json:"threePointersAttempted"`
+	ThreePointersPercentage *float64 `json:"threePointersPercentage"`
+	FreeThrowsMade          *float64 `json:"freeThrowsMade"`
+	FreeThrowsAttempted     *float64 `json:"freeThrowsAttempted"`
+	FreeThrowsPercentage    *float64 `json:"freeThrowsPercentage"`
+	ReboundsOffensive       *float64 `json:"reboundsOffensive"`
+	ReboundsDefensive       *float64 `json:"reboundsDefensive"`
+	ReboundsTotal           *float64 `json:"reboundsTotal"`
+	Assists                 *float64 `json:"assists"`
+	Steals                  *float64 `json:"steals"`
+	Blocks                  *float64 `json:"blocks"`
+	Turnovers               *float64 `json:"turnovers"`
+	FoulsPersonal           *float64 `json:"foulsPersonal"`
+	Points                  *float64 `json:"points"`
+	PlusMinusPoints         *float64 `json:"plusMinusPoints"`
+}
+
+func (p *BoxScoreTraditionalV3Player) DidNotPlay() bool {
+	if p.Statistics.Minutes == nil {
+		return true
+	}
+	return *p.Statistics.Minutes == ""
+}
+
+func BoxScoreTraditionalV3(gameID string) (*BoxScoreTraditionalV3Data, error) {
+	url := fmt.Sprintf("https://stats.nba.com/stats/boxscoretraditionalv3?GameID=%s", gameID)
+	fmt.Println(url)
+	req := initNBAReq(url)
+	body := curl(req)
+
+	unmarshalled := BoxScoreTraditionalV3Resp{}
+	if err := json.Unmarshal(body, &unmarshalled); err != nil {
+		panic(err)
+	}
+	return &unmarshalled.BoxScoreTraditional, nil
+}
+
 var sem = make(chan int, 50)
 
 func curl(req *http.Request) []byte {
 	sem <- 1
 	defer func() { <-sem }()
-	client := &http.Client{}
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		panic(err)
