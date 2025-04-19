@@ -3,6 +3,7 @@ package db
 import (
 	"basketball/config"
 	"basketball/nba"
+	"basketball/utils"
 
 	"database/sql"
 	_ "embed"
@@ -20,7 +21,7 @@ func SetupDatabase() {
 		log.Println("Database file not found. Creating a new database.")
 		file, err := os.Create(config.DatabaseFile)
 		if err != nil {
-			log.Fatalf("Failed to create database file: %v", err)
+			log.Fatalf("Failed to create database file: %v", utils.ErrorWithTrace(err))
 		}
 		file.Close()
 	}
@@ -43,14 +44,14 @@ func RunMigrations() {
 func ValidateMigrations() error {
 	db, err := sql.Open("sqlite3", config.DatabaseFile)
 	if err != nil {
-		return fmt.Errorf("failed to open databse: %v", err)
+		return fmt.Errorf("failed to open databse: %v", utils.ErrorWithTrace(err))
 	}
 	defer db.Close()
 
 	var count int
 	err = db.QueryRow("Select COUNT(*) FROM teams").Scan(&count)
 	if err != nil {
-		panic(fmt.Errorf("failed to query teams table: %v", err))
+		panic(fmt.Errorf("failed to query teams table: %v", utils.ErrorWithTrace(err)))
 	}
 
 	if count != 31 {
@@ -60,14 +61,14 @@ func ValidateMigrations() error {
 	var name string
 	err = db.QueryRow("SELECT name FROM teams WHERE id = 1610612752").Scan(&name)
 	if err != nil {
-		panic(fmt.Errorf("failed to find Knicks: %v", err))
+		panic(fmt.Errorf("failed to find Knicks: %v", utils.ErrorWithTrace(err)))
 	}
 	if name != "New York Knicks" {
 		panic(fmt.Errorf("expected team.id 1610612752 to have name 'New York Knicks', got '%s'", name))
 	}
 	err = db.QueryRow("SELECT name FROM teams WHERE id = 0").Scan(&name)
 	if err != nil {
-		panic(fmt.Errorf("failed to find NULL_TEAM: %v", err))
+		panic(fmt.Errorf("failed to find NULL_TEAM: %v", utils.ErrorWithTrace(err)))
 	}
 	if name != "NULL_TEAM" {
 		panic(fmt.Errorf("expected team.id 0 to have name 'NULL_TEAM', got '%s'", name))
@@ -82,14 +83,15 @@ var chunkyDunker string
 func PlayerIDFromCode(playerCode string) (int, error) {
 	db, err := sql.Open("sqlite3", config.DatabaseFile)
 	if err != nil {
-		return -1, fmt.Errorf("failed to open databse: %v", err)
+		return -1, fmt.Errorf("failed to open databse: %v", utils.ErrorWithTrace(err))
 	}
 	defer db.Close()
 
 	var id int
 	err = db.QueryRow("SELECT id FROM players WHERE name = $1", playerCode).Scan(&id)
 	if err != nil {
-		return -1, err
+		fmt.Println(playerCode)
+		return -1, utils.ErrorWithTrace(err)
 	}
 	return id, nil
 }
@@ -103,7 +105,7 @@ func InsertPlayers(players []nba.CommonAllPlayer) {
 
 	tx, err := db.Begin()
 	if err != nil {
-		log.Printf("Error beginning transaction: %v", err)
+		log.Printf("Error beginning transaction: %v", utils.ErrorWithTrace(err))
 	}
 
 	stmt, err := tx.Prepare(
@@ -115,7 +117,7 @@ func InsertPlayers(players []nba.CommonAllPlayer) {
 	)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Error preparing statement: %v", err)
+		log.Printf("Error preparing statement: %v", utils.ErrorWithTrace(err))
 	}
 	defer stmt.Close()
 
@@ -145,6 +147,6 @@ func InsertPlayers(players []nba.CommonAllPlayer) {
 	}
 	err = tx.Commit()
 	if err != nil {
-		log.Printf("Error committing transaction: %v", err)
+		log.Printf("Error committing transaction: %v", utils.ErrorWithTrace(err))
 	}
 }
