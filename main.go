@@ -6,7 +6,6 @@ import (
 	"basketball/nba"
 	"basketball/youtube"
 
-	"context"
 	"crypto/md5"
 	_ "embed"
 	"fmt"
@@ -68,35 +67,29 @@ func Knickerbockers() {
 	fmt.Println("finding non-situational players...")
 	games := nba.LeagueGameFinderByTeamID(KnicksTeamId)
 	game := games[0]
-	boxscore := nba.BoxScoreTraditionalV2(*game.GameID)
+	boxscore, err := nba.BoxScoreTraditionalV3(*game.GameID)
+	if err != nil {
+		panic(err)
+	}
 
 	wg := sync.WaitGroup{}
 	playerGameMap := map[string]nba.LeagueGameFinderGame{}
 	errMap := sync.Map{}
 	videoMap := sync.Map{}
 
-	nonSituational := []nba.BoxScoreTraditionalV2PlayerStats{}
-	for _, p := range boxscore.PlayerStats {
-		if int(*p.TeamId) != KnicksTeamId {
+	var knicksPlayers []nba.BoxScoreTraditionalV3Player
+	if *boxscore.HomeTeamId == KnicksTeamId {
+		knicksPlayers = boxscore.HomeTeam.Players
+	}else {
+		knicksPlayers = boxscore.AwayTeam.Players
+	}
+
+	nonSituational := []nba.BoxScoreTraditionalV3Player{}
+	for _, p := range knicksPlayers {
+		if p.DidNotPlay() {
 			continue
 		}
-		if p.MIN == nil {
-			continue
-		}
-		split := strings.Split(*p.MIN, ":")
-		minStr, secStr := split[0], split[1]
-		minFloat, err := strconv.ParseFloat(minStr, 64)
-		if err != nil {
-			panic(err)
-		}
-		secFloat, err := strconv.ParseFloat(secStr, 64)
-		if err != nil {
-			panic(err)
-		}
-		min, sec := int(minFloat), int(secFloat)
-		if min > 0 || sec > 0 {
-			nonSituational = append(nonSituational, p)
-		}
+		nonSituational = append(nonSituational, p)
 	}
 
 	measures := []nba.VideoDetailsAssetContextMeasure{
@@ -108,37 +101,37 @@ func Knickerbockers() {
 		nba.VideoDetailsAssetContextMeasures.BLK,
 	}
 
-        fmt.Printf("%d non-situational players\n", len(nonSituational))
+	fmt.Printf("%d non-situational players\n", len(nonSituational))
 	fmt.Println("querying for asset urls...")
 	teamAssets := map[string][]nba.VideoDetailAsset{}
 	for _, p := range nonSituational {
-		id, err := db.PlayerIDFromCode(*p.PlayerName)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
+		id := int(*p.PersonId)
 		games, err := nba.LeagueGameFinderByPlayerID(id)
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 		playerGame := games[0]
-		playerGameMap[*p.PlayerName] = playerGame
+		playerName := *p.FirstName + *p.FamilyName
+		playerGameMap[playerName] = playerGame
 
 		pAssets, err := getVideoAssets(playerGame, measures)
 		if err != nil {
-			fmt.Println(*p.PlayerName, err)
+			fmt.Println(playerName, err)
 			continue
 		}
 		if err := sortAssets(&pAssets); err != nil {
-			fmt.Println(*p.PlayerName, err)
+			fmt.Println(playerName, err)
 			continue
 		}
-		teamAssets[*p.PlayerName] = pAssets
+		teamAssets[playerName] = pAssets
 	}
 
 	fmt.Println("download clips? (y/n)")
-	fmt.Scan(&input)
+	_, err = fmt.Scan(&input)
+	if err != nil {
+		panic(err)
+	}
 	if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
 		return
 	}
@@ -170,6 +163,13 @@ func Knickerbockers() {
 	}
 
 	wg.Wait()
+	defer func() {
+		videoMap.Range(func(key, value any) bool {
+			videoRes := value.(VideoRes)
+			_ = os.Remove(videoRes.OutputFile)
+			return true
+		})
+	}()
 
 	fmt.Println("Displaying errors...")
 	errMap.Range(func(key, value any) bool {
@@ -179,49 +179,18 @@ func Knickerbockers() {
 	})
 
 	fmt.Println("Upload to Youtube? (y/n)")
-	fmt.Scan(&input)
+	_, err = fmt.Scan(&input)
+	if err != nil {
+		panic(err)
+	}
+
 	if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
-		videoMap.Range(func(key, value any) bool {
-			videoRes := value.(VideoRes)
-			_ = os.Remove(videoRes.OutputFile)
-			return true
-		})
 		return
 	}
 
-	oauthConfig, err := youtube.OAuthConfig()
+	service, err := youtube.GetService()
 	if err != nil {
-		videoMap.Range(func(key, value any) bool {
-			videoRes := value.(VideoRes)
-			_ = os.Remove(videoRes.OutputFile)
-			return true
-		})
 		panic(err)
-	}
-	token, err := youtube.GetToken(oauthConfig)
-	if err != nil {
-		videoMap.Range(func(key, value any) bool {
-			videoRes := value.(VideoRes)
-			_ = os.Remove(videoRes.OutputFile)
-			return true
-		})
-		panic(err)
-	}
-
-	tokenSource := oauthConfig.TokenSource(context.Background(), token)
-	newToken, err := tokenSource.Token()
-	if err != nil {
-		videoMap.Range(func(key, value any) bool {
-			videoRes := value.(VideoRes)
-			_ = os.Remove(videoRes.OutputFile)
-			return true
-		})
-		panic(err)
-	}
-
-	if newToken.AccessToken != token.AccessToken {
-		youtube.SaveToken(config.TokenFile, newToken)
-		token = newToken
 	}
 
 	videoMap.Range(func(playerName, value any) bool {
@@ -243,7 +212,7 @@ func Knickerbockers() {
 		wg.Add(1)
 		go func() {
 			defer func() { wg.Done() }()
-			youtube.UploadFile(videoRes.OutputFile, title, description, *game.PlayerName, *game.TeamName, oauthConfig, token)
+			youtube.UploadFile(videoRes.OutputFile, title, description, *game.PlayerName, *game.TeamName, service)
 			_ = os.Remove(videoRes.OutputFile)
 		}()
 		return true
@@ -461,7 +430,10 @@ func getVideoAssets(game nba.LeagueGameFinderGame, measures []nba.VideoDetailsAs
 		fmt.Printf("%d/%d:\n", i+1, n)
 		fmt.Println(e)
 		fmt.Println("Would you like to continue? (y/n)")
-		fmt.Scan(&input)
+		_, err := fmt.Scan(&input)
+		if err != nil {
+			return nil, err
+		}
 		if !regexp.MustCompile("^[yY]").Match([]byte(input)) {
 			return []nba.VideoDetailAsset{}, fmt.Errorf("user aborted: %s", e.Error())
 		}
