@@ -66,7 +66,9 @@ func Knickerbockers() {
 	var input string
 	fmt.Println("finding non-situational players...")
 	games := nba.LeagueGameFinderByTeamID(KnicksTeamId)
-	game := games[0]
+	gameNum := 0
+	game := games[gameNum]
+	fmt.Println(*game.Matchup)
 	boxscore, err := nba.BoxScoreTraditionalV3(*game.GameID)
 	if err != nil {
 		panic(err)
@@ -111,7 +113,7 @@ func Knickerbockers() {
 			fmt.Println(err)
 			continue
 		}
-		playerGame := games[0]
+		playerGame := games[gameNum]
 		playerName := *p.FirstName + *p.FamilyName
 		playerGameMap[playerName] = playerGame
 
